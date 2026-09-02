@@ -18,6 +18,30 @@ def order_group_card(order: Order) -> str:
     )
 
 
+def order_reactivated_card(order: Order) -> str:
+    route = f"{html_escape(order.from_location)} -> {html_escape(order.to_location)}"
+    if order.order_type == OrderType.CARGO:
+        extra = f"📦 <b>Yuk:</b> {html_escape(order.cargo_type or '-')} | ⏰ <b>Vaqt:</b> {html_escape(order.departure_time)}"
+    else:
+        extra = (
+            f"👥 <b>Odam soni:</b> {order.passengers_count or 1} ta"
+            f" | ⏰ <b>Vaqt:</b> {html_escape(order.departure_time)}"
+        )
+    return (
+        "⚠️ <b>BUYURTMA QAYTA FAOLLASHTIRILDI!</b>\n"
+        "<i>(Avvalgi haydovchi bilan kelishilmadi)</i>\n\n"
+        f"📍 <b>Yo'nalish:</b> {route}\n"
+        f"{extra}"
+    )
+
+
+def order_trip_started_card(driver_name: str) -> str:
+    return (
+        f"✅ Safar boshlandi. Haydovchi <b>{html_escape(driver_name)}</b> "
+        "mijoz bilan kelishdi."
+    )
+
+
 def order_claimed_card(driver_name: str) -> str:
     return (
         f"✅ Ushbu buyurtmani Haydovchi <b>{html_escape(driver_name)}</b> qabul qildi."
@@ -37,7 +61,9 @@ def order_driver_private(order: Order) -> str:
         f"📍 Yo'nalish: {html_escape(order.from_location)} -> {html_escape(order.to_location)}\n"
         f"{extra}\n"
         f"⏰ Vaqt: {html_escape(order.departure_time)}\n"
-        f"🆔 Buyurtma: #{order.id}"
+        f"🆔 Buyurtma: #{order.id}\n\n"
+        "Mijoz bilan bog'laning. Kelishilmasa pastdagi tugma orqali buyurtmani "
+        "boshqa haydovchilarga qaytaring."
     )
 
 
@@ -47,7 +73,8 @@ def order_passenger_accepted(driver_name: str, car_model: str, car_number: str, 
         f"🚖 Haydovchi: {html_escape(driver_name)}\n"
         f"🚗 Mashina: {html_escape(car_model)} — <code>{html_escape(car_number)}</code>\n"
         f"📞 Telefon: <code>{html_escape(phone)}</code>\n\n"
-        "Haydovchi tez orada siz bilan bog'lanadi."
+        "Haydovchi tez orada siz bilan bog'lanadi.\n"
+        "Agar kelishilmasa yoki haydovchi javob bermasa — pastdagi tugmalardan foydalaning."
     )
 
 

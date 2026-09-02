@@ -7,12 +7,15 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.db_requests import (
+    claim_cooldown_remaining,
     claim_order_atomic,
     get_driver_by_telegram,
     get_order,
     is_driver_access_active,
+    is_driver_rejected,
 )
-from bot.keyboards.inline_kb import subscribe_kb
+from bot.database.models import OPEN_ORDER_STATUSES
+from bot.keyboards.inline_kb import driver_deal_kb, passenger_deal_kb, subscribe_kb
 from bot.services.formatters import (
     order_claimed_card,
     order_driver_private,
@@ -24,6 +27,7 @@ from bot.services.group_ops import (
     persist_drivers_group,
 )
 from bot.services.ui import safe_send
+from bot.utils.dt import format_tashkent
 
 logger = logging.getLogger(__name__)
 router = Router(name="group")
@@ -128,9 +132,30 @@ async def claim_order(callback: CallbackQuery, session: AsyncSession, bot: Bot) 
         )
         return
 
+    until = claim_cooldown_remaining(driver)
+    if until is not None:
+        await callback.answer(
+            f"Vaqtinchalik cheklov: {format_tashkent(until)} gacha "
+            "yangi buyurtma olmaysiz.",
+            show_alert=True,
+        )
+        return
+
     order = await get_order(session, order_id)
     if order is None:
         await callback.answer("Buyurtma topilmadi.", show_alert=True)
+        return
+    if order.status not in OPEN_ORDER_STATUSES:
+        await callback.answer(
+            "Kechirasiz, bu buyurtma allaqachon olindi!",
+            show_alert=True,
+        )
+        return
+    if is_driver_rejected(order, callback.from_user.id):
+        await callback.answer(
+            "Siz ushbu buyurtmani bekor qilgansiz, uni qayta ololmaysiz!",
+            show_alert=True,
+        )
         return
 
     claimed = await claim_order_atomic(session, order_id, driver)
@@ -149,7 +174,12 @@ async def claim_order(callback: CallbackQuery, session: AsyncSession, bot: Bot) 
     except TelegramBadRequest:
         logger.warning("Guruh xabarini tahrirlab bo'lmadi: order=%s", order_id)
 
-    sent = await safe_send(bot, driver.telegram_id, order_driver_private(claimed))
+    sent = await safe_send(
+        bot,
+        driver.telegram_id,
+        order_driver_private(claimed),
+        reply_markup=driver_deal_kb(claimed.id),
+    )
     if not sent:
         await callback.answer(
             "Qabul qilindi, lekin shaxsiy chatga yozib bo'lmadi. Botni /start qiling.",
@@ -164,4 +194,5 @@ async def claim_order(callback: CallbackQuery, session: AsyncSession, bot: Bot) 
         order_passenger_accepted(
             driver.full_name, driver.car_model, driver.car_number, driver.phone
         ),
+        reply_markup=passenger_deal_kb(claimed.id),
     )

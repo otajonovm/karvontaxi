@@ -128,6 +128,40 @@ async def send_to_drivers_group(bot: Bot, text: str, **kwargs) -> Message:
     raise last_error or RuntimeError("Haydovchilar guruhiga yuborib bo'lmadi")
 
 
+async def edit_or_resend_group_message(
+    bot: Bot,
+    message_id: int | None,
+    text: str,
+    **kwargs,
+) -> Message:
+    if message_id is not None:
+        last_error: Exception | None = None
+        tried: list[int] = []
+        for cid in [drivers_group_id(), *group_id_candidates()]:
+            if cid in tried:
+                continue
+            tried.append(cid)
+            try:
+                edited = await bot.edit_message_text(
+                    text,
+                    chat_id=cid,
+                    message_id=message_id,
+                    **kwargs,
+                )
+                await persist_drivers_group(cid)
+                if isinstance(edited, Message):
+                    return edited
+                return await send_to_drivers_group(bot, text, **kwargs)
+            except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                last_error = exc
+                logger.warning("Guruh xabarini tahrirlash %s: %s", cid, exc)
+        logger.info(
+            "Eski guruh kartochkasi tahrirlanmadi, yangi e'lon yuboriladi: %s",
+            last_error,
+        )
+    return await send_to_drivers_group(bot, text, **kwargs)
+
+
 async def create_one_time_invite(bot: Bot, user_id: int) -> str | None:
     expire = int(
         (datetime.now(timezone.utc) + timedelta(days=settings.trial_days + 1)).timestamp()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import Select, func, or_, select, update
@@ -10,7 +11,9 @@ from bot.config import settings
 from bot.database.models import (
     AppSetting,
     Driver,
+    DriverCancelLog,
     DriverStatus,
+    OPEN_ORDER_STATUSES,
     Order,
     OrderStatus,
     OrderType,
@@ -25,6 +28,8 @@ from bot.database.models import (
 from bot.utils.dt import now_utc
 
 SETTING_DRIVERS_GROUP = "drivers_group_id"
+FAIL_LIMIT_24H = 3
+CLAIM_COOLDOWN_HOURS = 2
 
 
 async def get_app_setting(session: AsyncSession, key: str) -> str | None:
@@ -154,6 +159,7 @@ async def create_order(
         passengers_count=passengers_count,
         cargo_type=cargo_type,
         status=OrderStatus.NEW,
+        rejected_drivers="[]",
     )
     session.add(order)
     await session.flush()
@@ -181,17 +187,67 @@ async def get_order(session: AsyncSession, order_id: int) -> Order | None:
     return result.scalar_one_or_none()
 
 
+def parse_rejected_ids(raw: str | None) -> list[int]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [int(item) for item in data]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    ids: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            ids.append(int(part))
+    return ids
+
+
+def dump_rejected_ids(ids: list[int]) -> str:
+    unique: list[int] = []
+    for item in ids:
+        if item not in unique:
+            unique.append(item)
+    return json.dumps(unique)
+
+
+def is_driver_rejected(order: Order, telegram_id: int) -> bool:
+    return telegram_id in parse_rejected_ids(order.rejected_drivers)
+
+
+def order_driver_telegram(order: Order) -> int | None:
+    if order.accepted_driver_id:
+        return int(order.accepted_driver_id)
+    if order.driver is not None:
+        return order.driver.telegram_id
+    return None
+
+
+def claim_cooldown_remaining(driver: Driver, moment: datetime | None = None) -> datetime | None:
+    moment = moment or now_utc()
+    until = driver.claim_cooldown_until
+    if until and until > moment:
+        return until
+    return None
+
+
 async def claim_order_atomic(
     session: AsyncSession, order_id: int, driver: Driver
 ) -> Order | None:
-    """Race-condition safe claim: only the first UPDATE with status=NEW wins."""
+    """Race-safe claim: first UPDATE on NEW/PENDING wins."""
     stmt = (
         update(Order)
-        .where(Order.id == order_id, Order.status == OrderStatus.NEW)
+        .where(
+            Order.id == order_id,
+            Order.status.in_(OPEN_ORDER_STATUSES),
+        )
         .values(
             status=OrderStatus.ACCEPTED,
             driver_id=driver.id,
+            accepted_driver_id=driver.telegram_id,
             claimed_at=now_utc(),
+            cancel_reason=None,
         )
     )
     result = await session.execute(stmt)
@@ -199,6 +255,101 @@ async def claim_order_atomic(
     if result.rowcount != 1:
         return None
     return await get_order(session, order_id)
+
+
+async def complete_order_atomic(
+    session: AsyncSession,
+    order_id: int,
+    *,
+    actor_telegram_id: int,
+) -> Order | None:
+    order = await get_order(session, order_id)
+    if order is None or order.status != OrderStatus.ACCEPTED:
+        return None
+    if order_driver_telegram(order) != actor_telegram_id:
+        return None
+    result = await session.execute(
+        update(Order)
+        .where(Order.id == order_id, Order.status == OrderStatus.ACCEPTED)
+        .values(status=OrderStatus.COMPLETED)
+    )
+    await session.commit()
+    if result.rowcount != 1:
+        return None
+    return await get_order(session, order_id)
+
+
+async def reopen_order_atomic(
+    session: AsyncSession,
+    order_id: int,
+    *,
+    actor_telegram_id: int,
+    reason: str,
+    initiated_by: str,
+) -> Order | None:
+    """ACCEPTED -> PENDING. First cancel wins; rejected driver is blacklisted."""
+    order = await get_order(session, order_id)
+    if order is None or order.status != OrderStatus.ACCEPTED:
+        return None
+
+    current_tg = order_driver_telegram(order)
+
+    is_passenger = actor_telegram_id == order.passenger_id
+    is_driver = current_tg is not None and actor_telegram_id == current_tg
+    if not is_passenger and not is_driver:
+        return None
+
+    rejected = parse_rejected_ids(order.rejected_drivers)
+    if current_tg is not None and current_tg not in rejected:
+        rejected.append(current_tg)
+
+    result = await session.execute(
+        update(Order)
+        .where(Order.id == order_id, Order.status == OrderStatus.ACCEPTED)
+        .values(
+            status=OrderStatus.PENDING,
+            driver_id=None,
+            accepted_driver_id=None,
+            claimed_at=None,
+            cancel_reason=reason,
+            rejected_drivers=dump_rejected_ids(rejected),
+        )
+    )
+    await session.commit()
+    if result.rowcount != 1:
+        return None
+
+    if current_tg is not None:
+        driver = await get_driver_by_telegram(session, current_tg)
+        if driver is not None:
+            session.add(
+                DriverCancelLog(
+                    driver_id=driver.id,
+                    order_id=order_id,
+                    telegram_id=current_tg,
+                    reason=reason,
+                    initiated_by=initiated_by,
+                    created_at=now_utc(),
+                )
+            )
+            await session.flush()
+            if initiated_by == "driver":
+                await _maybe_apply_claim_cooldown(session, driver)
+
+    return await get_order(session, order_id)
+
+
+async def _maybe_apply_claim_cooldown(session: AsyncSession, driver: Driver) -> None:
+    since = now_utc() - timedelta(hours=24)
+    count = await session.scalar(
+        select(func.count(DriverCancelLog.id)).where(
+            DriverCancelLog.driver_id == driver.id,
+            DriverCancelLog.initiated_by == "driver",
+            DriverCancelLog.created_at >= since,
+        )
+    ) or 0
+    if count >= FAIL_LIMIT_24H:
+        driver.claim_cooldown_until = now_utc() + timedelta(hours=CLAIM_COOLDOWN_HOURS)
 
 
 async def create_return_trip(
@@ -467,7 +618,7 @@ async def get_stats(session: AsyncSession) -> dict[str, int]:
         select(func.count(Order.id)).where(Order.created_at >= today_start)
     ) or 0
     open_orders = await session.scalar(
-        select(func.count(Order.id)).where(Order.status == OrderStatus.NEW)
+        select(func.count(Order.id)).where(Order.status.in_(OPEN_ORDER_STATUSES))
     ) or 0
     trips = await session.scalar(
         select(func.count(ReturnTrip.id)).where(ReturnTrip.status == TripStatus.ACTIVE)

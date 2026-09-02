@@ -55,9 +55,17 @@ async def show_main_menu(
     await event.answer(text, reply_markup=markup)
 
 
-async def safe_send(bot, chat_id: int, text: str, **kwargs) -> bool:
+async def safe_send(bot, chat_id: int, text: str, **kwargs) -> Message | None:
     try:
-        await bot.send_message(chat_id, text, **kwargs)
-        return True
+        return await bot.send_message(chat_id, text, **kwargs)
     except (TelegramForbiddenError, TelegramBadRequest):
-        return False
+        return None
+
+
+async def strip_inline(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass

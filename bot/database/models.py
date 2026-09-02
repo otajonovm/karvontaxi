@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -43,9 +44,13 @@ class OrderType(str, enum.Enum):
 
 class OrderStatus(str, enum.Enum):
     NEW = "NEW"
+    PENDING = "PENDING"
     ACCEPTED = "ACCEPTED"
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
+
+
+OPEN_ORDER_STATUSES = (OrderStatus.NEW, OrderStatus.PENDING)
 
 
 class DriverStatus(str, enum.Enum):
@@ -116,6 +121,7 @@ class Driver(Base):
     feedback_day5_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     day7_offer_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     kicked_day8: Mapped[bool] = mapped_column(Boolean, default=False)
+    claim_cooldown_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     invite_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
     feedback_rating: Mapped[FeedbackRating | None] = mapped_column(
         _enum(FeedbackRating), nullable=True
@@ -141,6 +147,9 @@ class Order(Base):
     driver_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("drivers.id"), nullable=True, index=True
     )
+    accepted_driver_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
     order_type: Mapped[OrderType] = mapped_column(_enum(OrderType), nullable=False)
     from_location: Mapped[str] = mapped_column(String(255), nullable=False)
     to_location: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -153,6 +162,10 @@ class Order(Base):
     )
     group_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rejected_drivers: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]", nullable=False
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -238,3 +251,21 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class DriverCancelLog(Base):
+    __tablename__ = "driver_cancel_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    driver_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("drivers.id"), nullable=False, index=True
+    )
+    order_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orders.id"), nullable=False, index=True
+    )
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    initiated_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )

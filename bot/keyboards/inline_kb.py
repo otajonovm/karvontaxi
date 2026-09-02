@@ -67,6 +67,60 @@ def claim_order_kb(order_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def driver_deal_kb(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Safar boshlandi / Kelishdik",
+                    callback_data=f"deal_success:{order_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Kelisha olmadik (Bekor qilish)",
+                    callback_data=f"deal_failed:{order_id}",
+                )
+            ],
+        ]
+    )
+
+
+def passenger_deal_kb(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Boshqa haydovchi qidirish",
+                    callback_data=f"client_reject:{order_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚠️ Haydovchi aloqaga chiqmadi",
+                    callback_data=f"no_contact:{order_id}",
+                )
+            ],
+        ]
+    )
+
+
+CANCEL_REASON_LABELS = {
+    "price": "💸 Narx to'g'ri kelmadi",
+    "time": "⏰ Vaqt to'g'ri kelmadi",
+    "phone": "📵 Telefon ko'tarmadi / aloqa yo'q",
+    "other": "Boshqa sabab",
+}
+
+
+def cancel_reason_kb(order_id: int, prefix: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for code, title in CANCEL_REASON_LABELS.items():
+        builder.button(text=title, callback_data=f"{prefix}:{order_id}:{code}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def trip_date_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Bugun", callback_data="tdate:today")

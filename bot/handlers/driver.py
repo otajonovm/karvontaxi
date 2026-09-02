@@ -3,6 +3,7 @@ import re
 from datetime import datetime, time, timedelta, timezone
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -17,10 +18,12 @@ from bot.database.db_requests import (
     create_return_trip,
     get_driver_by_telegram,
     get_or_create_user,
+    get_order,
     is_driver_access_active,
     list_driver_trips,
+    order_driver_telegram,
 )
-from bot.database.models import DriverStatus, FeedbackRating
+from bot.database.models import DriverStatus, FeedbackRating, OrderStatus
 from bot.keyboards.default_kb import (
     BTN_BECOME_DRIVER,
     BTN_CANCEL,
@@ -32,6 +35,7 @@ from bot.keyboards.default_kb import (
     contact_keyboard,
 )
 from bot.keyboards.inline_kb import (
+    cancel_reason_kb,
     direction_kb,
     my_trip_kb,
     payment_admin_kb,
@@ -39,6 +43,7 @@ from bot.keyboards.inline_kb import (
     trip_date_kb,
     trip_seats_kb,
 )
+from bot.services.deals import handle_deal_success, handle_reopen, reason_label
 from bot.services.formatters import return_trip_card
 from bot.services.group_ops import create_one_time_invite
 from bot.services.ui import html_escape, normalize_phone, show_main_menu
@@ -445,3 +450,75 @@ async def cancel_trip(callback: CallbackQuery, session: AsyncSession) -> None:
         return
     await callback.message.edit_text("❌ E'lon yopildi.")
     await callback.answer("Yopildi")
+
+
+def _parse_order_id(data: str) -> int | None:
+    try:
+        return int(data.split(":")[1])
+    except (IndexError, ValueError):
+        return None
+
+
+@router.callback_query(F.data.startswith("deal_success:"))
+async def deal_success(
+    callback: CallbackQuery, session: AsyncSession, bot: Bot
+) -> None:
+    order_id = _parse_order_id(callback.data or "")
+    if order_id is None:
+        await callback.answer("Noto'g'ri buyurtma.", show_alert=True)
+        return
+    await handle_deal_success(callback, session, bot, order_id)
+
+
+@router.callback_query(F.data.startswith("deal_failed:"))
+async def deal_failed(callback: CallbackQuery, session: AsyncSession) -> None:
+    order_id = _parse_order_id(callback.data or "")
+    if order_id is None or callback.from_user is None:
+        await callback.answer("Noto'g'ri buyurtma.", show_alert=True)
+        return
+    order = await get_order(session, order_id)
+    if (
+        order is None
+        or order.status != OrderStatus.ACCEPTED
+        or order_driver_telegram(order) != callback.from_user.id
+    ):
+        await callback.answer(
+            "Bu buyurtma endi sizniki emas yoki allaqachon yopilgan.",
+            show_alert=True,
+        )
+        return
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                "Bekor qilish sababini tanlang:",
+                reply_markup=cancel_reason_kb(order_id, "drej"),
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                "Bekor qilish sababini tanlang:",
+                reply_markup=cancel_reason_kb(order_id, "drej"),
+            )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("drej:"))
+async def deal_failed_reason(
+    callback: CallbackQuery, session: AsyncSession, bot: Bot
+) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer("Noto'g'ri sabab.", show_alert=True)
+        return
+    try:
+        order_id = int(parts[1])
+    except ValueError:
+        await callback.answer("Noto'g'ri buyurtma.", show_alert=True)
+        return
+    await handle_reopen(
+        callback,
+        session,
+        bot,
+        order_id,
+        reason=reason_label(parts[2]),
+        initiated_by="driver",
+    )
