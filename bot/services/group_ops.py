@@ -28,9 +28,40 @@ def _load_saved_id() -> int | None:
 def bind_drivers_group(chat_id: int, title: str | None = None) -> None:
     global _resolved_chat_id
     _resolved_chat_id = chat_id
-    _GROUP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _GROUP_FILE.write_text(str(chat_id), encoding="utf-8")
+    try:
+        _GROUP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _GROUP_FILE.write_text(str(chat_id), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Guruh ID faylga yozilmadi: %s", exc)
     logger.info("Haydovchilar maxfiy guruhi saqlandi: %s [%s]", title or "", chat_id)
+
+
+async def persist_drivers_group(chat_id: int, title: str | None = None) -> None:
+    """Guruh ID ni xotira, fayl va bazaga yozadi (Heroku disk vaqtinchalik)."""
+    from bot.database.db_requests import SETTING_DRIVERS_GROUP, set_app_setting
+    from bot.database.engine import SessionFactory
+
+    bind_drivers_group(chat_id, title)
+    try:
+        async with SessionFactory() as session:
+            await set_app_setting(session, SETTING_DRIVERS_GROUP, str(chat_id))
+            await session.commit()
+    except Exception:
+        logger.exception("Guruh ID bazaga yozilmadi: %s", chat_id)
+
+
+async def load_group_id_from_db() -> int | None:
+    from bot.database.db_requests import SETTING_DRIVERS_GROUP, get_app_setting
+    from bot.database.engine import SessionFactory
+
+    try:
+        async with SessionFactory() as session:
+            raw = await get_app_setting(session, SETTING_DRIVERS_GROUP)
+        if raw:
+            return int(raw)
+    except Exception:
+        logger.exception("Guruh ID bazadan o'qilmadi")
+    return None
 
 
 def is_group_bound() -> bool:
@@ -39,8 +70,10 @@ def is_group_bound() -> bool:
 
 def group_id_candidates() -> list[int]:
     ids: list[int] = []
+    if _resolved_chat_id is not None:
+        ids.append(_resolved_chat_id)
     saved = _load_saved_id()
-    if saved is not None:
+    if saved is not None and saved not in ids:
         ids.append(saved)
     raw = settings.supergroup_id
     if raw not in ids:
@@ -57,15 +90,15 @@ def drivers_group_id() -> int:
     return settings.supergroup_id
 
 
-def _remember(chat_id: int) -> None:
-    bind_drivers_group(chat_id)
-
-
 async def resolve_drivers_group(bot: Bot) -> int | None:
+    db_id = await load_group_id_from_db()
+    if db_id is not None:
+        bind_drivers_group(db_id)
+
     for cid in group_id_candidates():
         try:
             chat = await bot.get_chat(cid)
-            bind_drivers_group(chat.id, getattr(chat, "title", None))
+            await persist_drivers_group(chat.id, getattr(chat, "title", None))
             return chat.id
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             logger.warning("Guruh ID %s ishlamadi: %s", cid, exc)
@@ -87,7 +120,7 @@ async def send_to_drivers_group(bot: Bot, text: str, **kwargs) -> Message:
         tried.append(cid)
         try:
             sent = await bot.send_message(cid, text, **kwargs)
-            _remember(cid)
+            await persist_drivers_group(cid)
             return sent
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             last_error = exc

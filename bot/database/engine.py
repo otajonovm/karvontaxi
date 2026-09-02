@@ -8,11 +8,22 @@ from sqlalchemy.ext.asyncio import (
 from bot.config import settings
 from bot.database.models import Base
 
-engine: AsyncEngine = create_async_engine(
-    settings.database_url,
-    echo=False,
-    future=True,
-)
+_engine_kwargs: dict = {
+    "echo": False,
+    "future": True,
+    "pool_pre_ping": True,
+}
+
+if settings.is_postgres:
+    _engine_kwargs.update(
+        pool_size=5,
+        max_overflow=5,
+        pool_recycle=280,
+    )
+    if settings.postgres_ssl:
+        _engine_kwargs["connect_args"] = {"ssl": True}
+
+engine: AsyncEngine = create_async_engine(settings.database_url, **_engine_kwargs)
 
 SessionFactory = async_sessionmaker(
     bind=engine,

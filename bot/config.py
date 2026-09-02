@@ -4,6 +4,12 @@ from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from bot.db_url import (
+    is_postgres_url,
+    normalize_database_url,
+    postgres_needs_ssl,
+)
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -29,7 +35,8 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def resolve_sqlite_path(cls, value: str) -> str:
+    def normalize_db_url(cls, value: str) -> str:
+        value = normalize_database_url(value)
         prefix = "sqlite+aiosqlite:///"
         if value.startswith(prefix) and not value.startswith(prefix + "/"):
             relative = value.removeprefix(prefix)
@@ -38,6 +45,14 @@ class Settings(BaseSettings):
                 absolute.parent.mkdir(parents=True, exist_ok=True)
                 return f"{prefix}{absolute.as_posix()}"
         return value
+
+    @property
+    def is_postgres(self) -> bool:
+        return is_postgres_url(self.database_url)
+
+    @property
+    def postgres_ssl(self) -> bool:
+        return postgres_needs_ssl(self.database_url)
 
     @property
     def admin_id_list(self) -> list[int]:

@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from bot.config import settings
 from bot.database.models import (
+    AppSetting,
     Driver,
     DriverStatus,
     Order,
@@ -22,6 +23,22 @@ from bot.database.models import (
     UserRole,
 )
 from bot.utils.dt import now_utc
+
+SETTING_DRIVERS_GROUP = "drivers_group_id"
+
+
+async def get_app_setting(session: AsyncSession, key: str) -> str | None:
+    row = await session.get(AppSetting, key)
+    return row.value if row else None
+
+
+async def set_app_setting(session: AsyncSession, key: str, value: str) -> None:
+    row = await session.get(AppSetting, key)
+    if row is None:
+        session.add(AppSetting(key=key, value=value))
+    else:
+        row.value = value
+    await session.flush()
 
 
 async def get_or_create_user(

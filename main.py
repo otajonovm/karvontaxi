@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -30,9 +31,32 @@ logging.basicConfig(
 logger = logging.getLogger("karvon")
 
 
+async def start_health_server() -> None:
+    """Heroku web dyno PORT ni ushlab turadi."""
+    port = os.getenv("PORT")
+    if not port:
+        return
+    from aiohttp import web
+
+    app = web.Application()
+
+    async def ping(_request: web.Request) -> web.Response:
+        return web.Response(text="Karvon Taxi bot is running")
+
+    app.router.add_get("/", ping)
+    app.router.add_get("/health", ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    logger.info("Health server: 0.0.0.0:%s", port)
+
+
 async def main() -> None:
     (ROOT / "data").mkdir(parents=True, exist_ok=True)
+    db_kind = "PostgreSQL" if settings.is_postgres else "SQLite"
+    logger.info("Database: %s", db_kind)
     await init_db()
+    await start_health_server()
 
     bot = Bot(
         token=settings.bot_token,

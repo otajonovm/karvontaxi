@@ -18,17 +18,21 @@ from bot.services.formatters import (
     order_driver_private,
     order_passenger_accepted,
 )
-from bot.services.group_ops import bind_drivers_group, drivers_group_id, is_group_bound
+from bot.services.group_ops import (
+    drivers_group_id,
+    is_group_bound,
+    persist_drivers_group,
+)
 from bot.services.ui import safe_send
 
 logger = logging.getLogger(__name__)
 router = Router(name="group")
 
 
-def _bind_group(chat) -> bool:
+async def _bind_group(chat) -> bool:
     if chat.type not in {"group", "supergroup"}:
         return False
-    bind_drivers_group(chat.id, getattr(chat, "title", None))
+    await persist_drivers_group(chat.id, getattr(chat, "title", None))
     return True
 
 
@@ -46,7 +50,7 @@ async def bot_membership_changed(event: ChatMemberUpdated) -> None:
         return
     if status in {"left", "kicked"}:
         return
-    _bind_group(event.chat)
+    await _bind_group(event.chat)
     try:
         await event.bot.send_message(
             event.chat.id,
@@ -60,7 +64,7 @@ async def bot_membership_changed(event: ChatMemberUpdated) -> None:
 @router.message(Command("ulanish"), F.chat.type.in_({"group", "supergroup"}))
 @router.message(Command("start"), F.chat.type.in_({"group", "supergroup"}))
 async def bind_command(message: Message) -> None:
-    _bind_group(message.chat)
+    await _bind_group(message.chat)
     await message.reply(
         "✅ <b>Karvon Taxi shu maxfiy guruhga ulandi.</b>\n"
         f"Guruh ID: <code>{message.chat.id}</code>\n\n"
@@ -73,7 +77,7 @@ async def autobind_on_group_message(message: Message) -> None:
     if is_group_bound() and message.chat.id == drivers_group_id():
         return
     if not is_group_bound():
-        _bind_group(message.chat)
+        await _bind_group(message.chat)
         await message.reply(
             "✅ <b>Karvon Taxi ulandi.</b>\n"
             "Mijoz buyurtmalari shu maxfiy guruhga tushadi."
