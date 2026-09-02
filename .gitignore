@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+data/*.db
+data/*.db-journal
+data/drivers_group.txt
+.env
+.idea/
+.vscode/
+*.log
